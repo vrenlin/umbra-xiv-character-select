@@ -15,7 +15,8 @@ dedicated **Apply Design** button.
 - **Popup → "Design" group** — one button per design belonging to the selected
   character. Clicking one selects it (highlighted).
 - **Status line** — a plain (non-clickable) line summarizing the current
-  selection, e.g. `Selected: Aymeric — Formal Attire`.
+  selection, e.g. `Selected: Aymeric — Formal Attire` (the "Selected:" prefix
+  is highlighted in red).
 - **Apply Design button** — the third, distinct action: calls Character
   Select+'s `SwitchToCharacterDesign` IPC method with whatever character/design
   is currently selected, shows a toast on success/failure, and (optionally)
@@ -23,7 +24,9 @@ dedicated **Apply Design** button.
 
 Two widget config options are exposed in Umbra's widget settings:
 - **Apply immediately when clicking a design** — skips the Apply button and
-  applies as soon as you click a design (off by default).
+  applies as soon as you click a design (off by default). When enabled, the
+  status line and Apply Design button are hidden from the popup entirely,
+  since neither is needed anymore.
 - **Close popup after applying** — auto-closes the popup once Apply succeeds
   (on by default).
 
@@ -121,9 +124,9 @@ its dependency on Glamourer.
   rather use (`SetFontAwesomeIcon`, `SetGfdIcon`, etc. are all available since
   `StandardWidgetFeatures.CustomizableIcon` is enabled).
 - **Apply-on-click design list**: if you'd rather designs apply the moment
-  they're clicked (no separate Apply button), toggle "Apply immediately when
-  clicking a design" in the widget's config, or just flip the default in
-  `GetConfigVariables()`.
+  they're clicked (no separate Apply button or status line), toggle "Apply
+  immediately when clicking a design" in the widget's config, or just flip
+  the default in `GetConfigVariables()`.
 - **Switching character only (no design)**: `CharacterSelectIpc` also exposes
   `SwitchToCharacter(name)` if you want to wire up a "switch character,
   keep current design" action too.
