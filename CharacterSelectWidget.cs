@@ -116,6 +116,15 @@ public sealed class CharacterSelectWidget(
                 "When enabled, the design list is capped to the height of the character list and scrolls instead of growing the popup taller.",
                 false
             ),
+
+            new IntegerWidgetConfigVariable(
+                "MaxLabelLength",
+                "Cut off long character/design names",
+                "Truncates character and design names longer than this many characters, appending an ellipsis. Set to 0 to always show the full name (the popup will size itself to fit).",
+                0,
+                0,
+                100
+            ),
         ];
     }
 
@@ -135,6 +144,15 @@ public sealed class CharacterSelectWidget(
             OnClick           = ApplySelectedDesign,
             ClosePopupOnClick = false, // We close manually - see ApplySelectedDesign.
         };
+
+        // The built-in ".group" class auto-sizes horizontally with
+        // AutoSize.Grow, which - per Una.Drawing's own docs - splits
+        // available width *equally* between multiple Grow siblings. With
+        // two side-by-side columns that squeezes the (often longer) design
+        // column down to the character column's width and truncates it.
+        // Override both to Fit so each column instead hugs its own content.
+        _charactersGroup.Node.Style.AutoSize = (AutoSize.Fit, AutoSize.Fit);
+        _designsGroup.Node.Style.AutoSize    = (AutoSize.Fit, AutoSize.Fit);
 
         Popup.Add(new ColumnsRow(_charactersGroup.Node, _designsGroup.Node));
         Popup.Add(new MenuPopup.Separator());
@@ -243,7 +261,7 @@ public sealed class CharacterSelectWidget(
             }
 
             foreach (var name in Ipc.GetCharacterList()) {
-                var button = new MenuPopup.Button(name) {
+                var button = new MenuPopup.Button(TruncateLabel(name)) {
                     Selected          = name == _selectedCharacter,
                     ClosePopupOnClick = false,
                 };
@@ -293,7 +311,7 @@ public sealed class CharacterSelectWidget(
             if (_selectedCharacter.Length == 0) return;
 
             foreach (var name in Ipc.GetCharacterDesigns(_selectedCharacter)) {
-                var button = new MenuPopup.Button(name) {
+                var button = new MenuPopup.Button(TruncateLabel(name)) {
                     Selected          = name == _selectedDesign,
                     ClosePopupOnClick = false,
                 };
@@ -306,6 +324,21 @@ public sealed class CharacterSelectWidget(
         } catch (Exception e) {
             Logger.Error($"[CharacterSelectWidget] RefreshDesigns failed: {e.Message}");
         }
+    }
+
+    /// <summary>
+    /// Truncates a character/design name to the configured
+    /// "MaxLabelLength" (0 = unlimited), appending an ellipsis. Only affects
+    /// the displayed button label - callers still use the untruncated name
+    /// for identity (dictionary keys, OnClick closures, IPC calls).
+    /// </summary>
+    private string TruncateLabel(string name)
+    {
+        int maxLength = GetConfigValue<int>("MaxLabelLength");
+
+        if (maxLength <= 0 || name.Length <= maxLength) return name;
+
+        return name[..maxLength] + "…";
     }
 
     /// <summary>
