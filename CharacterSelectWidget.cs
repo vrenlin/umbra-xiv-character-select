@@ -4,6 +4,7 @@ using Dalamud.Plugin.Services;
 using Umbra.CharacterSelectWidget.Services;
 using Umbra.Common;
 using Umbra.Widgets;
+using Una.Drawing;
 
 namespace Umbra.CharacterSelectWidget.Widgets;
 
@@ -57,6 +58,27 @@ public sealed class CharacterSelectWidget(
     private readonly Dictionary<string, MenuPopup.Button> _characterButtons = [];
     private readonly Dictionary<string, MenuPopup.Button> _designButtons    = [];
 
+    /// <summary>
+    /// Wraps the "Character" and "Design" groups in a single popup menu item
+    /// so they render side by side instead of one on top of the other.
+    /// </summary>
+    private sealed class ColumnsRow : MenuPopup.IMenuItem
+    {
+        public Node Node { get; } = new() {
+            ClassList = ["character-select-columns"],
+        };
+
+        public ColumnsRow(Node leftColumn, Node rightColumn)
+        {
+            Node.Style.Flow     = Flow.Horizontal;
+            Node.Style.Gap      = 8;
+            Node.Style.AutoSize = (AutoSize.Grow, AutoSize.Fit);
+
+            Node.AppendChild(leftColumn);
+            Node.AppendChild(rightColumn);
+        }
+    }
+
     // Live state.
     private string _currentCharacter  = string.Empty; // What Character Select+ says is active right now.
     private string _currentDesign     = string.Empty; // Best-effort: last design we know was applied.
@@ -87,6 +109,22 @@ public sealed class CharacterSelectWidget(
                 "Whether the popup should close automatically after a design has been applied.",
                 true
             ),
+
+            new BooleanWidgetConfigVariable(
+                "MatchDesignsHeightToCharacters",
+                "Scroll the design list within the character list's height",
+                "When enabled, the design list is capped to the height of the character list and scrolls instead of growing the popup taller.",
+                false
+            ),
+
+            new IntegerWidgetConfigVariable(
+                "MaxLabelLength",
+                "Cut off long character/design names",
+                "Truncates character and design names longer than this many characters, appending an ellipsis. Set to 0 to always show the full name (the popup will size itself to fit).",
+                0,
+                0,
+                100
+            ),
         ];
     }
 
@@ -107,8 +145,16 @@ public sealed class CharacterSelectWidget(
             ClosePopupOnClick = false, // We close manually - see ApplySelectedDesign.
         };
 
-        Popup.Add(_charactersGroup);
-        Popup.Add(_designsGroup);
+        // The built-in ".group" class auto-sizes horizontally with
+        // AutoSize.Grow, which - per Una.Drawing's own docs - splits
+        // available width *equally* between multiple Grow siblings. With
+        // two side-by-side columns that squeezes the (often longer) design
+        // column down to the character column's width and truncates it.
+        // Override both to Fit so each column instead hugs its own content.
+        _charactersGroup.Node.Style.AutoSize = (AutoSize.Fit, AutoSize.Fit);
+        _designsGroup.Node.Style.AutoSize    = (AutoSize.Fit, AutoSize.Fit);
+
+        Popup.Add(new ColumnsRow(_charactersGroup.Node, _designsGroup.Node));
         Popup.Add(new MenuPopup.Separator());
         Popup.Add(_selectionStatus);
         Popup.Add(_applyButton);
@@ -133,6 +179,10 @@ public sealed class CharacterSelectWidget(
         SetSubText(_currentDesign);
 
         _applyButton.IsDisabled = _selectedCharacter.Length == 0 || _selectedDesign.Length == 0;
+
+        if (Popup.IsOpen) {
+            SyncDesignListHeight();
+        }
     }
 
     /// <inheritdoc/>
@@ -173,117 +223,204 @@ public sealed class CharacterSelectWidget(
     /// <see cref="MenuPopup.Group"/> doesn't expose a bulk "Clear" - only
     /// Add/Remove/RemoveById - so we remove every button we previously added
     /// ourselves, using the tracking dictionary.
+    ///
+    /// This runs from inside <c>OnClick</c> handlers while Una.Drawing is
+    /// mid-render, and Umbra's popup render loop does not cleanly unwind its
+    /// ImGui Begin/End stack if an exception escapes from here - so every
+    /// removal is isolated and the tracking dictionary is always cleared
+    /// (via try/finally) even if a single button fails to remove cleanly.
+    /// Leaving the dictionary out of sync with the actual child nodes is
+    /// what would otherwise compound into worse failures on the next rapid
+    /// click.
     /// </summary>
     private static void ClearGroup(MenuPopup.Group group, Dictionary<string, MenuPopup.Button> trackedButtons)
     {
-        foreach (var button in trackedButtons.Values) {
-            group.Remove(button, dispose: true);
+        try {
+            foreach (var button in trackedButtons.Values) {
+                try {
+                    group.Remove(button, dispose: true);
+                } catch (Exception e) {
+                    Logger.Warning($"[CharacterSelectWidget] Failed to remove a popup button cleanly: {e.Message}");
+                }
+            }
+        } finally {
+            trackedButtons.Clear();
         }
-
-        trackedButtons.Clear();
     }
 
     /// <summary>Rebuilds the "Character" group. Called every time the popup is opened.</summary>
     private void RefreshCharacters()
     {
-        ClearGroup(_charactersGroup, _characterButtons);
+        try {
+            ClearGroup(_charactersGroup, _characterButtons);
 
-        string current = Ipc.GetCurrentCharacter();
+            string current = Ipc.GetCurrentCharacter();
 
-        if (_selectedCharacter.Length == 0) {
-            _selectedCharacter = current;
+            if (_selectedCharacter.Length == 0) {
+                _selectedCharacter = current;
+            }
+
+            foreach (var name in Ipc.GetCharacterList()) {
+                var button = new MenuPopup.Button(TruncateLabel(name)) {
+                    Selected          = name == _selectedCharacter,
+                    ClosePopupOnClick = false,
+                };
+
+                button.OnClick = () => OnCharacterSelected(name);
+
+                _characterButtons[name] = button;
+                _charactersGroup.Add(button);
+            }
+
+            RefreshDesigns();
+            UpdateStatusLabel();
+        } catch (Exception e) {
+            Logger.Error($"[CharacterSelectWidget] RefreshCharacters failed: {e.Message}");
         }
-
-        foreach (var name in Ipc.GetCharacterList()) {
-            var button = new MenuPopup.Button(name) {
-                Selected          = name == _selectedCharacter,
-                ClosePopupOnClick = false,
-            };
-
-            button.OnClick = () => OnCharacterSelected(name);
-
-            _characterButtons[name] = button;
-            _charactersGroup.Add(button);
-        }
-
-        RefreshDesigns();
-        UpdateStatusLabel();
     }
 
     private void OnCharacterSelected(string name)
     {
-        if (_selectedCharacter == name) return;
+        try {
+            if (_selectedCharacter == name) return;
 
-        _selectedCharacter = name;
-        _selectedDesign    = string.Empty;
+            _selectedCharacter = name;
+            _selectedDesign    = string.Empty;
 
-        foreach (var (buttonName, button) in _characterButtons) {
-            button.Selected = buttonName == name;
+            foreach (var (buttonName, button) in _characterButtons) {
+                button.Selected = buttonName == name;
+            }
+
+            RefreshDesigns();
+            UpdateStatusLabel();
+        } catch (Exception e) {
+            // Never let an exception escape from inside a Node.OnClick handler -
+            // Umbra's popup render loop doesn't unwind its ImGui Begin/End stack
+            // cleanly if we throw here, which can crash the game after repeated
+            // rapid clicks.
+            Logger.Error($"[CharacterSelectWidget] OnCharacterSelected('{name}') failed: {e.Message}");
         }
-
-        RefreshDesigns();
-        UpdateStatusLabel();
     }
 
     /// <summary>Rebuilds the "Design" group for whichever character is currently selected.</summary>
     private void RefreshDesigns()
     {
-        ClearGroup(_designsGroup, _designButtons);
+        try {
+            ClearGroup(_designsGroup, _designButtons);
 
-        if (_selectedCharacter.Length == 0) return;
+            if (_selectedCharacter.Length == 0) return;
 
-        foreach (var name in Ipc.GetCharacterDesigns(_selectedCharacter)) {
-            var button = new MenuPopup.Button(name) {
-                Selected          = name == _selectedDesign,
-                ClosePopupOnClick = false,
-            };
+            foreach (var name in Ipc.GetCharacterDesigns(_selectedCharacter)) {
+                var button = new MenuPopup.Button(TruncateLabel(name)) {
+                    Selected          = name == _selectedDesign,
+                    ClosePopupOnClick = false,
+                };
 
-            button.OnClick = () => OnDesignSelected(name);
+                button.OnClick = () => OnDesignSelected(name);
 
-            _designButtons[name] = button;
-            _designsGroup.Add(button);
+                _designButtons[name] = button;
+                _designsGroup.Add(button);
+            }
+        } catch (Exception e) {
+            Logger.Error($"[CharacterSelectWidget] RefreshDesigns failed: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Truncates a character/design name to the configured
+    /// "MaxLabelLength" (0 = unlimited), appending an ellipsis. Only affects
+    /// the displayed button label - callers still use the untruncated name
+    /// for identity (dictionary keys, OnClick closures, IPC calls).
+    /// </summary>
+    private string TruncateLabel(string name)
+    {
+        int maxLength = GetConfigValue<int>("MaxLabelLength");
+
+        if (maxLength <= 0 || name.Length <= maxLength) return name;
+
+        return name[..maxLength] + "…";
+    }
+
+    /// <summary>
+    /// When enabled via config, caps the "Design" list's content node to the
+    /// rendered height of the "Character" list and makes it scroll instead of
+    /// growing the popup taller than the character column.
+    /// </summary>
+    private void SyncDesignListHeight()
+    {
+        try {
+            Node? designsContent = _designsGroup.Node.QuerySelector(".content");
+            if (designsContent is null) return;
+
+            float charactersHeight = _charactersGroup.Node.OuterHeight;
+
+            if (GetConfigValue<bool>("MatchDesignsHeightToCharacters") && charactersHeight > 0) {
+                designsContent.ToggleClass("scrollbars", true);
+                designsContent.Overflow      = false;
+                designsContent.Style.Size    = new Size(0, charactersHeight);
+                designsContent.Style.Padding = new EdgeSize(0, 10, 0, 0); // Room for the scrollbar.
+            } else {
+                designsContent.ToggleClass("scrollbars", false);
+                designsContent.Overflow      = true;
+                designsContent.Style.Size    = null;
+                designsContent.Style.Padding = null;
+            }
+        } catch (Exception e) {
+            // Runs every frame while the popup is open - must never throw and
+            // interrupt Umbra's render loop mid-frame.
+            Logger.Warning($"[CharacterSelectWidget] SyncDesignListHeight failed: {e.Message}");
         }
     }
 
     private void OnDesignSelected(string name)
     {
-        _selectedDesign = name;
+        try {
+            _selectedDesign = name;
 
-        foreach (var (buttonName, button) in _designButtons) {
-            button.Selected = buttonName == name;
-        }
+            foreach (var (buttonName, button) in _designButtons) {
+                button.Selected = buttonName == name;
+            }
 
-        UpdateStatusLabel();
+            UpdateStatusLabel();
 
-        if (GetConfigValue<bool>("ApplyOnDesignClick")) {
-            ApplySelectedDesign();
+            if (GetConfigValue<bool>("ApplyOnDesignClick")) {
+                ApplySelectedDesign();
+            }
+        } catch (Exception e) {
+            // See the comment on OnCharacterSelected - this must never throw.
+            Logger.Error($"[CharacterSelectWidget] OnDesignSelected('{name}') failed: {e.Message}");
         }
     }
 
     /// <summary>The "third button" - applies whatever character/design is currently selected.</summary>
     private void ApplySelectedDesign()
     {
-        if (_selectedCharacter.Length == 0 || _selectedDesign.Length == 0) {
-            ToastGui.ShowError("Pick a character and a design first.");
-            return;
-        }
-
-        bool success = Ipc.SwitchToCharacterDesign(_selectedCharacter, _selectedDesign);
-
-        if (success) {
-            _currentCharacter = _selectedCharacter;
-            _currentDesign    = _selectedDesign;
-
-            ToastGui.ShowNormal($"Applied '{_selectedDesign}' to {_selectedCharacter}.");
-
-            if (GetConfigValue<bool>("ClosePopupAfterApply")) {
-                Popup.Close();
+        try {
+            if (_selectedCharacter.Length == 0 || _selectedDesign.Length == 0) {
+                ToastGui.ShowError("Pick a character and a design first.");
+                return;
             }
-        } else {
-            ToastGui.ShowError($"Failed to apply '{_selectedDesign}' to {_selectedCharacter}.");
-        }
 
-        UpdateStatusLabel();
+            bool success = Ipc.SwitchToCharacterDesign(_selectedCharacter, _selectedDesign);
+
+            if (success) {
+                _currentCharacter = _selectedCharacter;
+                _currentDesign    = _selectedDesign;
+
+                ToastGui.ShowNormal($"Applied '{_selectedDesign}' to {_selectedCharacter}.");
+
+                if (GetConfigValue<bool>("ClosePopupAfterApply")) {
+                    Popup.Close();
+                }
+            } else {
+                ToastGui.ShowError($"Failed to apply '{_selectedDesign}' to {_selectedCharacter}.");
+            }
+
+            UpdateStatusLabel();
+        } catch (Exception e) {
+            // See the comment on OnCharacterSelected - this must never throw.
+            Logger.Error($"[CharacterSelectWidget] ApplySelectedDesign failed: {e.Message}");
+        }
     }
 
     private void UpdateStatusLabel()
