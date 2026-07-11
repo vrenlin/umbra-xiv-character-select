@@ -484,7 +484,7 @@ public sealed class CharacterSelectWidget(
         _selectionStatus.SetLabel(prefix, rest);
     }
 
-    private (string Prefix, string Rest) GetStatusLabelParts()
+    private (string Prefix, string Suffix) GetStatusLabelParts()
     {
         if (_selectedCharacter.Length == 0) return (string.Empty, "No character selected");
         if (_selectedDesign.Length == 0) return (string.Empty, $"{_selectedCharacter} — pick a design");
