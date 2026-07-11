@@ -31,6 +31,7 @@ public sealed class CharacterSelectWidget(
 {
     protected override StandardWidgetFeatures Features =>
         StandardWidgetFeatures.Text |
+        StandardWidgetFeatures.SubText |
         StandardWidgetFeatures.Icon |
         StandardWidgetFeatures.CustomizableIcon;
 
@@ -47,10 +48,14 @@ public sealed class CharacterSelectWidget(
     private MenuPopup.Button _selectionStatus = null!;
     private MenuPopup.Button _applyButton     = null!;
 
-    // Buttons currently shown in each group, kept around so we can toggle
-    // their "Selected" highlight without needing to re-query the group.
-    private readonly List<MenuPopup.Button> _characterButtons = [];
-    private readonly List<MenuPopup.Button> _designButtons    = [];
+    // Buttons currently shown in each group, keyed by character/design name
+    // so we can toggle their "Selected" highlight without needing to
+    // re-query the group. Umbra's Una.Drawing Node.Id must match
+    // "^[A-Za-z]{1}[A-Za-z0-9_-]+$", but character and design names are
+    // free-form user text (almost always containing a space) - so names
+    // can't be used as Node IDs and are tracked here instead.
+    private readonly Dictionary<string, MenuPopup.Button> _characterButtons = [];
+    private readonly Dictionary<string, MenuPopup.Button> _designButtons    = [];
 
     // Live state.
     private string _currentCharacter  = string.Empty; // What Character Select+ says is active right now.
@@ -167,11 +172,11 @@ public sealed class CharacterSelectWidget(
     /// <summary>
     /// <see cref="MenuPopup.Group"/> doesn't expose a bulk "Clear" - only
     /// Add/Remove/RemoveById - so we remove every button we previously added
-    /// ourselves, using the tracking list.
+    /// ourselves, using the tracking dictionary.
     /// </summary>
-    private static void ClearGroup(MenuPopup.Group group, List<MenuPopup.Button> trackedButtons)
+    private static void ClearGroup(MenuPopup.Group group, Dictionary<string, MenuPopup.Button> trackedButtons)
     {
-        foreach (var button in trackedButtons) {
+        foreach (var button in trackedButtons.Values) {
             group.Remove(button, dispose: true);
         }
 
@@ -191,14 +196,13 @@ public sealed class CharacterSelectWidget(
 
         foreach (var name in Ipc.GetCharacterList()) {
             var button = new MenuPopup.Button(name) {
-                Id                = $"char-{name}",
                 Selected          = name == _selectedCharacter,
                 ClosePopupOnClick = false,
             };
 
             button.OnClick = () => OnCharacterSelected(name);
 
-            _characterButtons.Add(button);
+            _characterButtons[name] = button;
             _charactersGroup.Add(button);
         }
 
@@ -213,8 +217,8 @@ public sealed class CharacterSelectWidget(
         _selectedCharacter = name;
         _selectedDesign    = string.Empty;
 
-        foreach (var button in _characterButtons) {
-            button.Selected = button.Id == $"char-{name}";
+        foreach (var (buttonName, button) in _characterButtons) {
+            button.Selected = buttonName == name;
         }
 
         RefreshDesigns();
@@ -230,14 +234,13 @@ public sealed class CharacterSelectWidget(
 
         foreach (var name in Ipc.GetCharacterDesigns(_selectedCharacter)) {
             var button = new MenuPopup.Button(name) {
-                Id                = $"design-{name}",
                 Selected          = name == _selectedDesign,
                 ClosePopupOnClick = false,
             };
 
             button.OnClick = () => OnDesignSelected(name);
 
-            _designButtons.Add(button);
+            _designButtons[name] = button;
             _designsGroup.Add(button);
         }
     }
@@ -246,8 +249,8 @@ public sealed class CharacterSelectWidget(
     {
         _selectedDesign = name;
 
-        foreach (var button in _designButtons) {
-            button.Selected = button.Id == $"design-{name}";
+        foreach (var (buttonName, button) in _designButtons) {
+            button.Selected = buttonName == name;
         }
 
         UpdateStatusLabel();
