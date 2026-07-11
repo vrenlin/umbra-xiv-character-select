@@ -106,8 +106,16 @@ public sealed class CharacterSelectWidget(
 
         public SelectionStatusItem()
         {
+            // Explicit rather than relying on stylesheet cascade/defaults, so
+            // this can never pick up the ".button:disabled" (greyed-out) look.
+            Node.IsDisabled = false;
+
             PrefixNode.Style.AutoSize = (AutoSize.Fit, AutoSize.Fit);
             PrefixNode.Style.Color    = new Color(255, 0, 0);
+
+            // Matches the same named theme color "Apply Design" (and every
+            // other non-hovered menu item) uses for its ".text" node.
+            RestNode.Style.Color = new Color("Widget.PopupMenuText");
         }
 
         public void SetLabel(string prefix, string rest)
