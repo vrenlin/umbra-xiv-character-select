@@ -4,6 +4,7 @@ using Dalamud.Plugin.Services;
 using Umbra.CharacterSelectWidget.Services;
 using Umbra.Common;
 using Umbra.Widgets;
+using Una.Drawing;
 
 namespace Umbra.CharacterSelectWidget.Widgets;
 
@@ -57,6 +58,27 @@ public sealed class CharacterSelectWidget(
     private readonly Dictionary<string, MenuPopup.Button> _characterButtons = [];
     private readonly Dictionary<string, MenuPopup.Button> _designButtons    = [];
 
+    /// <summary>
+    /// Wraps the "Character" and "Design" groups in a single popup menu item
+    /// so they render side by side instead of one on top of the other.
+    /// </summary>
+    private sealed class ColumnsRow : MenuPopup.IMenuItem
+    {
+        public Node Node { get; } = new() {
+            ClassList = ["character-select-columns"],
+        };
+
+        public ColumnsRow(Node leftColumn, Node rightColumn)
+        {
+            Node.Style.Flow     = Flow.Horizontal;
+            Node.Style.Gap      = 8;
+            Node.Style.AutoSize = (AutoSize.Grow, AutoSize.Fit);
+
+            Node.AppendChild(leftColumn);
+            Node.AppendChild(rightColumn);
+        }
+    }
+
     // Live state.
     private string _currentCharacter  = string.Empty; // What Character Select+ says is active right now.
     private string _currentDesign     = string.Empty; // Best-effort: last design we know was applied.
@@ -87,6 +109,13 @@ public sealed class CharacterSelectWidget(
                 "Whether the popup should close automatically after a design has been applied.",
                 true
             ),
+
+            new BooleanWidgetConfigVariable(
+                "MatchDesignsHeightToCharacters",
+                "Scroll the design list within the character list's height",
+                "When enabled, the design list is capped to the height of the character list and scrolls instead of growing the popup taller.",
+                false
+            ),
         ];
     }
 
@@ -107,8 +136,7 @@ public sealed class CharacterSelectWidget(
             ClosePopupOnClick = false, // We close manually - see ApplySelectedDesign.
         };
 
-        Popup.Add(_charactersGroup);
-        Popup.Add(_designsGroup);
+        Popup.Add(new ColumnsRow(_charactersGroup.Node, _designsGroup.Node));
         Popup.Add(new MenuPopup.Separator());
         Popup.Add(_selectionStatus);
         Popup.Add(_applyButton);
@@ -133,6 +161,10 @@ public sealed class CharacterSelectWidget(
         SetSubText(_currentDesign);
 
         _applyButton.IsDisabled = _selectedCharacter.Length == 0 || _selectedDesign.Length == 0;
+
+        if (Popup.IsOpen) {
+            SyncDesignListHeight();
+        }
     }
 
     /// <inheritdoc/>
@@ -242,6 +274,31 @@ public sealed class CharacterSelectWidget(
 
             _designButtons[name] = button;
             _designsGroup.Add(button);
+        }
+    }
+
+    /// <summary>
+    /// When enabled via config, caps the "Design" list's content node to the
+    /// rendered height of the "Character" list and makes it scroll instead of
+    /// growing the popup taller than the character column.
+    /// </summary>
+    private void SyncDesignListHeight()
+    {
+        Node? designsContent = _designsGroup.Node.QuerySelector(".content");
+        if (designsContent is null) return;
+
+        float charactersHeight = _charactersGroup.Node.OuterHeight;
+
+        if (GetConfigValue<bool>("MatchDesignsHeightToCharacters") && charactersHeight > 0) {
+            designsContent.ToggleClass("scrollbars", true);
+            designsContent.Overflow    = false;
+            designsContent.Style.Size  = new Size(0, charactersHeight);
+            designsContent.Style.Padding = new EdgeSize(0, 10, 0, 0); // Room for the scrollbar.
+        } else {
+            designsContent.ToggleClass("scrollbars", false);
+            designsContent.Overflow      = true;
+            designsContent.Style.Size    = null;
+            designsContent.Style.Padding = null;
         }
     }
 
