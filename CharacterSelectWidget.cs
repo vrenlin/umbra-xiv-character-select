@@ -46,8 +46,9 @@ public sealed class CharacterSelectWidget(
     private readonly MenuPopup.Group _charactersGroup = new("Character");
     private readonly MenuPopup.Group _designsGroup    = new("Design");
 
-    private MenuPopup.Button _selectionStatus = null!;
-    private MenuPopup.Button _applyButton     = null!;
+    private SelectionStatusItem _selectionStatus = null!;
+    private MenuPopup.Button    _applyButton     = null!;
+    private MenuPopup.Separator _bottomSeparator = null!;
 
     // Buttons currently shown in each group, keyed by character/design name
     // so we can toggle their "Selected" highlight without needing to
@@ -79,6 +80,52 @@ public sealed class CharacterSelectWidget(
         }
     }
 
+    /// <summary>
+    /// A non-interactive popup label showing the current selection. Renders
+    /// as two text spans sharing a single row - a "Selected:" prefix in red,
+    /// followed by the character/design summary in the same color as the
+    /// other menu items (i.e. not greyed out).
+    /// </summary>
+    private sealed class SelectionStatusItem : MenuPopup.IMenuItem
+    {
+        public bool IsVisible {
+            get => Node.IsVisible;
+            set => Node.Style.IsVisible = value;
+        }
+
+        public Node Node { get; } = new() {
+            ClassList = ["button"],
+            ChildNodes = [
+                new() { ClassList = ["text"] }, // "Selected:" prefix.
+                new() { ClassList = ["text"] }, // Character/design summary.
+            ],
+        };
+
+        private Node PrefixNode => Node.ChildNodes[0];
+        private Node RestNode   => Node.ChildNodes[1];
+
+        public SelectionStatusItem()
+        {
+            // Explicit rather than relying on stylesheet cascade/defaults, so
+            // this can never pick up the ".button:disabled" (greyed-out) look.
+            Node.IsDisabled = false;
+
+            PrefixNode.Style.AutoSize = (AutoSize.Fit, AutoSize.Fit);
+            PrefixNode.Style.Color    = new Color(255, 0, 0);
+
+            // Matches the same named theme color "Apply Design" (and every
+            // other non-hovered menu item) uses for its ".text" node.
+            RestNode.Style.Color = new Color("Widget.PopupMenuText");
+        }
+
+        public void SetLabel(string prefix, string rest)
+        {
+            PrefixNode.Style.IsVisible = !string.IsNullOrEmpty(prefix);
+            PrefixNode.NodeValue       = prefix;
+            RestNode.NodeValue         = rest;
+        }
+    }
+
     // Live state.
     private string _currentCharacter  = string.Empty; // What Character Select+ says is active right now.
     private string _currentDesign     = string.Empty; // Best-effort: last design we know was applied.
@@ -99,7 +146,7 @@ public sealed class CharacterSelectWidget(
             new BooleanWidgetConfigVariable(
                 "ApplyOnDesignClick",
                 "Apply immediately when clicking a design",
-                "When enabled, clicking a design in the list applies it right away instead of requiring the Apply button.",
+                "When enabled, clicking a design in the list applies it right away instead of requiring the Apply button, and the Selected/Apply Design section is hidden from the menu.",
                 false
             ),
 
@@ -134,16 +181,19 @@ public sealed class CharacterSelectWidget(
         SetGameIconId(64024u); // Generic "appearance/mirror" style icon.
         SetText("Character Select");
 
-        _selectionStatus = new(GetStatusLabel()) {
-            IsDisabled        = true,
-            ClosePopupOnClick = false,
-        };
+        _selectionStatus = new();
+        UpdateStatusLabel();
 
         _applyButton = new("Apply Design") {
-            Icon              = 14u,
             OnClick           = ApplySelectedDesign,
             ClosePopupOnClick = false, // We close manually - see ApplySelectedDesign.
         };
+
+        // No icon, and the label centered in the button's full width.
+        _applyButton.Node.QuerySelector(".icon")!.Style.IsVisible = false;
+        _applyButton.Node.QuerySelector(".text")!.Style.TextAlign = Anchor.MiddleCenter;
+
+        _bottomSeparator = new();
 
         // The built-in ".group" class auto-sizes horizontally with
         // AutoSize.Grow, which - per Una.Drawing's own docs - splits
@@ -155,7 +205,7 @@ public sealed class CharacterSelectWidget(
         _designsGroup.Node.Style.AutoSize    = (AutoSize.Fit, AutoSize.Fit);
 
         Popup.Add(new ColumnsRow(_charactersGroup.Node, _designsGroup.Node));
-        Popup.Add(new MenuPopup.Separator());
+        Popup.Add(_bottomSeparator);
         Popup.Add(_selectionStatus);
         Popup.Add(_applyButton);
 
@@ -179,6 +229,11 @@ public sealed class CharacterSelectWidget(
         SetSubText(_currentDesign);
 
         _applyButton.IsDisabled = _selectedCharacter.Length == 0 || _selectedDesign.Length == 0;
+
+        bool applyOnDesignClick    = GetConfigValue<bool>("ApplyOnDesignClick");
+        _bottomSeparator.IsVisible = !applyOnDesignClick;
+        _selectionStatus.IsVisible = !applyOnDesignClick;
+        _applyButton.IsVisible     = !applyOnDesignClick;
 
         if (Popup.IsOpen) {
             SyncDesignListHeight();
@@ -425,14 +480,15 @@ public sealed class CharacterSelectWidget(
 
     private void UpdateStatusLabel()
     {
-        _selectionStatus.Label = GetStatusLabel();
+        var (prefix, rest) = GetStatusLabelParts();
+        _selectionStatus.SetLabel(prefix, rest);
     }
 
-    private string GetStatusLabel()
+    private (string Prefix, string Suffix) GetStatusLabelParts()
     {
-        if (_selectedCharacter.Length == 0) return "No character selected";
-        if (_selectedDesign.Length == 0) return $"{_selectedCharacter} — pick a design";
+        if (_selectedCharacter.Length == 0) return (string.Empty, "No character selected");
+        if (_selectedDesign.Length == 0) return (string.Empty, $"{_selectedCharacter} — pick a design");
 
-        return $"Selected: {_selectedCharacter} — {_selectedDesign}";
+        return ("Selected:", $"{_selectedCharacter} — {_selectedDesign}");
     }
 }
